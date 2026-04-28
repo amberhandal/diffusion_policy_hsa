@@ -1,7 +1,9 @@
 import multiprocessing as mp
 import numpy as np
 import time
-from spnav import spnav_open, spnav_poll_event, spnav_close, SpnavMotionEvent, SpnavButtonEvent
+# from spnav import spnav_open, spnav_poll_event, spnav_close, SpnavMotionEvent, SpnavButtonEvent
+import pyspacemouse
+import threading
 from diffusion_policy.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
 
 class Spacemouse(mp.Process):
