@@ -128,7 +128,9 @@ class Spacemouse(mp.Process):
 
     # ========= main loop ==========
     def run(self):
-        spnav_open()
+        device = pyspacemouse.open()
+        if not device:
+            raise RuntimeError('Spacemouse not found')
         try:
             motion_event = np.zeros((7,), dtype=np.int64)
             button_state = np.zeros((self.n_buttons,), dtype=bool)
@@ -141,15 +143,30 @@ class Spacemouse(mp.Process):
             self.ready_event.set()
 
             while not self.stop_event.is_set():
-                event = spnav_poll_event()
+                raw = device.read()
                 receive_timestamp = time.time()
-                if isinstance(event, SpnavMotionEvent):
-                    motion_event[:3] = event.translation
-                    motion_event[3:6] = event.rotation
-                    motion_event[6] = event.period
-                elif isinstance(event, SpnavButtonEvent):
-                    button_state[event.bnum] = event.press
-                else:
+
+                # event = spnav_poll_event()
+                # receive_timestamp = time.time()
+                # if isinstance(event, SpnavMotionEvent):
+                #     motion_event[:3] = event.translation
+                #     motion_event[3:6] = event.rotation
+                #     motion_event[6] = event.period
+                # elif isinstance(event, SpnavButtonEvent):
+                #     button_state[event.bnum] = event.press
+                if raw is not None:
+                    # scale to match spnav integer range
+                    motion_event[0] = int(raw.x     * self.max_value)
+                    motion_event[1] = int(raw.y     * self.max_value)
+                    motion_event[2] = int(raw.z     * self.max_value)
+                    motion_event[3] = int(raw.roll  * self.max_value)
+                    motion_event[4] = int(raw.pitch * self.max_value)
+                    motion_event[5] = int(raw.yaw   * self.max_value)
+                    motion_event[6] = 0
+
+                    # update button state
+                    for i in range(min(self.n_buttons, len(raw.buttons))):
+                        button_state[i] = bool(raw.buttons[i])
                     # finish integrating this round of events
                     # before sending over
                     self.ring_buffer.put({
@@ -159,4 +176,4 @@ class Spacemouse(mp.Process):
                     })
                     time.sleep(1/self.frequency)
         finally:
-            spnav_close()
+            device.close()
