@@ -1,0 +1,36 @@
+name: real_image
+
+image_shape: [3, 240, 320]
+# TODO: Update to be agnostic
+dataset_path: /home/yui0833/data/pusht_v1
+
+shape_meta: &shape_meta
+  # Push-T with a single RealSense camera (UR5 setup used 4 cameras)
+  # (camera_1 + camera_3 enabled); we only have camera_0 from the Franka rig
+  obs:
+    camera_0:
+      shape: ${task.image_shape}
+      type: rgb
+    robot_eef_pose:
+      shape: [2]    # only x,y (dataset class will extract idxs [0,1] from the 6D pose)
+      type: low_dim
+  action:
+    shape: [2]      # 2D push-T action (dataset class extracts idxs [0,1] from 6D action)
+
+env_runner:
+  _target_: diffusion_policy.env_runner.real_pusht_image_runner.RealPushTImageRunner
+
+dataset:
+  _target_: diffusion_policy.dataset.real_pusht_image_dataset.RealPushTImageDataset
+  shape_meta: *shape_meta
+  dataset_path: ${task.dataset_path}
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  n_latency_steps: ${n_latency_steps}
+  use_cache: True
+  seed: 42
+  val_ratio: 0.00
+  max_train_episodes: null
+  delta_action: False
