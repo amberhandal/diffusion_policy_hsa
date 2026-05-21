@@ -1,111 +1,109 @@
 """
-Minimal test: SpaceMouse controls Franka arm via ROS2 cartesian velocity.
-
-Press Ctrl+C to stop.
+SpaceMouse -> franka_server TCP client
+Uses official Franka Robotics axis mapping from franka_spacemouse repo.
+No buttons  = XY translation (Columbia style)
+Left button = rotation only
+Right button = unlock Z
 """
 
 import time
-import threading
+import socket
+import json
 import numpy as np
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from geometry_msgs.msg import TwistStamped
-from diffusion_policy.real_world.spacemouse_shared_memory import Spacemouse
+import pyspacemouse
 from multiprocessing.managers import SharedMemoryManager
 
-# tuning parameters
-LINEAR_SCALE  = 0.15   # m/s per unit spacemouse input
-ANGULAR_SCALE = 0.3    # rad/s per unit spacemouse input
-DEADZONE      = 0.05   # ignore inputs below this magnitude
+SERVER_IP   = '192.168.18.1'
+SERVER_PORT = 4242
+
+MAX_POS_SPEED = 0.15   # m/s
+MAX_ROT_SPEED = 0.15   # rad/s
+OPERATOR_FRONT = True  # True if sitting in front of robot
 
 def main():
-    # init ROS2
-    rclpy.init()
-    node = rclpy.create_node('spacemouse_franka_test')
+    print(f'Connecting to franka_server at {SERVER_IP}:{SERVER_PORT}...')
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((SERVER_IP, SERVER_PORT))
+    print('Connected!')
 
-    # publisher to cartesian velocity controller
-    pub = node.create_publisher(
-        TwistStamped,
-        '/cartesian_velocity_controller/cmd_vel',
-        10
-    )
+    device = pyspacemouse.open()
+    if not device:
+        raise RuntimeError('SpaceMouse not found')
+    print('SpaceMouse ready')
+    print('No buttons   = XY translation')
+    print('Left button  = rotation only')
+    print('Right button = unlock Z')
+    print('Ctrl+C to stop')
 
-    spin_thread = threading.Thread(
-        target=rclpy.spin, args=(node,), daemon=True)
-    spin_thread.start()
+    def send_vel(vx, vy, vz, wx, wy, wz):
+        msg = json.dumps({
+            'vx': float(vx), 'vy': float(vy), 'vz': float(vz),
+            'wx': float(wx), 'wy': float(wy), 'wz': float(wz),
+            't': time.time()
+        }) + '\n'
+        sock.sendall(msg.encode())
 
-    print('ROS2 initialized')
-    print('Starting SpaceMouse...')
+    try:
+        while True:
+            t_start = time.monotonic()
 
-    with SharedMemoryManager() as shm_manager:
-        with Spacemouse(shm_manager=shm_manager) as sm:
-            print('SpaceMouse ready')
-            print('Move the puck to move the arm')
-            print('Left button  = rotation mode (translation disabled)')
-            print('Right button = enable Z axis (disabled by default)')
-            print('Ctrl+C to stop')
+            state = device.read()
 
-            try:
-                while True:
-                    # get spacemouse state in robot frame
-                    motion = sm.get_motion_state_transformed()
-                    buttons = sm.get_button_state()
+            # official Franka axis mapping from franka_spacemouse repo
+            vx = -float(state.y) * MAX_POS_SPEED
+            vy =  float(state.x) * MAX_POS_SPEED
+            vz =  float(state.z) * MAX_POS_SPEED
+            wx = -float(state.roll)  * MAX_ROT_SPEED
+            wy = -float(state.pitch) * MAX_ROT_SPEED
+            wz = -float(state.yaw)   * MAX_ROT_SPEED
 
-                    dpos = motion[:3].copy()
-                    drot = motion[3:].copy()
+            # flip if operator is not in front
+            if not OPERATOR_FRONT:
+                vx *= -1
+                vy *= -1
+                wx *= -1
+                wy *= -1
 
-                    # left button = rotation only mode
-                    if buttons[0]:
-                        dpos[:] = 0
-                    else:
-                        drot[:] = 0
+            buttons = state.buttons
+            btn_left  = bool(buttons[0]) if len(buttons) > 0 else False
+            btn_right = bool(buttons[1]) if len(buttons) > 1 else False
 
-                    # right button unlocks Z
-                    if not buttons[1]:
-                        dpos[2] = 0
+            # Columbia-style button mapping
+            if not btn_left:
+                # no left button = translation mode, zero rotation
+                wx = wy = wz = 0.0
+            else:
+                # left button = rotation mode, zero translation
+                vx = vy = vz = 0.0
 
-                    # apply deadzone
-                    dpos[np.abs(dpos) < DEADZONE] = 0
-                    drot[np.abs(drot) < DEADZONE] = 0
+            if not btn_right:
+                # no right button = 2D mode, zero Z
+                vz = 0.0
 
-                    # scale
-                    vel_lin = dpos * LINEAR_SCALE
-                    vel_ang = drot * ANGULAR_SCALE
+            send_vel(vx, vy, vz, wx, wy, wz)
 
-                    # publish
-                    cmd = TwistStamped()
-                    cmd.header.stamp = node.get_clock().now().to_msg()
-                    cmd.header.frame_id = 'fer_link0'
-                    cmd.twist.linear.x  = float(vel_lin[0])
-                    cmd.twist.linear.y  = float(vel_lin[1])
-                    cmd.twist.linear.z  = float(vel_lin[2])
-                    cmd.twist.angular.x = float(vel_ang[0])
-                    cmd.twist.angular.y = float(vel_ang[1])
-                    cmd.twist.angular.z = float(vel_ang[2])
-                    pub.publish(cmd)
+            if any(abs(v) > 0.001 for v in [vx, vy, vz, wx, wy, wz]):
+                print(
+                    f'lin: [{vx:+.3f} {vy:+.3f} {vz:+.3f}]  '
+                    f'ang: [{wx:+.3f} {wy:+.3f} {wz:+.3f}]  '
+                    f'btn: [{btn_left} {btn_right}]'
+                )
 
-                    # print non-zero motion for feedback
-                    if np.any(np.abs(vel_lin) > 0.001) or np.any(np.abs(vel_ang) > 0.001):
-                        print(f'lin: [{vel_lin[0]:+.3f} {vel_lin[1]:+.3f} {vel_lin[2]:+.3f}]  '
-                              f'ang: [{vel_ang[0]:+.3f} {vel_ang[1]:+.3f} {vel_ang[2]:+.3f}]  '
-                              f'buttons: {buttons}')
+            elapsed = time.monotonic() - t_start
+            sleep_time = 0.01 - elapsed  # 100Hz
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
-                    time.sleep(0.05)  # 20Hz
-
-            except KeyboardInterrupt:
-                print('\nStopping...')
-
-            finally:
-                # publish zero velocity to stop arm
-                stop = TwistStamped()
-                stop.header.stamp = node.get_clock().now().to_msg()
-                pub.publish(stop)
-                print('Zero velocity sent, arm stopped')
-
-    node.destroy_node()
-    rclpy.shutdown()
-
+    except KeyboardInterrupt:
+        print('\nStopping...')
+    finally:
+        try:
+            send_vel(0, 0, 0, 0, 0, 0)
+        except:
+            pass
+        device.close()
+        sock.close()
+        print('Stopped')
 
 if __name__ == '__main__':
     main()
