@@ -1,0 +1,34 @@
+name: real_image
+
+image_shape: [3, 240, 320]
+# Update if you move the dataset. On lamb: ~/data/peg_insertion_v1 = /home/yui0833/data/peg_insertion_v1
+dataset_path: /home/yui0833/data/peg_insertion_v1
+
+shape_meta: &shape_meta
+  obs:
+    camera_0:
+      shape: ${task.image_shape}
+      type: rgb
+    robot_eef_pose:
+      shape: [6]    # full 6D pose (xyz + rotvec)
+      type: low_dim
+  action:
+    shape: [6]      # 6D action (xyz + rotvec)
+
+env_runner:
+  _target_: diffusion_policy.env_runner.real_pusht_image_runner.RealPushTImageRunner
+
+dataset:
+  _target_: diffusion_policy.dataset.real_pusht_image_dataset.RealPushTImageDataset
+  shape_meta: *shape_meta
+  dataset_path: ${task.dataset_path}
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  n_latency_steps: ${n_latency_steps}
+  use_cache: True
+  seed: 42
+  val_ratio: 0.05
+  max_train_episodes: null
+  delta_action: False
